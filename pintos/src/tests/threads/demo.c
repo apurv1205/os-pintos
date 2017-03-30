@@ -7,6 +7,23 @@
 #include "devices/timer.h"
 
 void test_demo(void) {
+int **Y=(int **)malloc(5*sizeof(int *));
+int i,j;
+for(i=0;i<5;++i)
+{
+Y[i]=(int *)malloc(sizeof(int)*5);
+}
+for(i=0;i<5;i++)
+{
+for(j=0;j<2;++j)
+{
+Y[i][j]=6;
+printf("i= %d,\tj= %d\n",i,j);
+}
+printf("\n");
+}
+
+  
   printf("Here I am\n");
 }
 

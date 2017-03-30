@@ -72,7 +72,7 @@ void
 malloc_init (void) 
 {
   size_t block_size;
-
+ 
   for (block_size = 16; block_size < PGSIZE / 2; block_size *= 2)
     {
       struct desc *d = &descs[desc_cnt++];
