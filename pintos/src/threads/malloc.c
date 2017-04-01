@@ -70,7 +70,7 @@ static struct list arena_list;
 static struct arena *block_to_arena (struct block *);
 static struct block *arena_to_block (struct arena *, size_t idx);
 static void malloc_breakdown (struct desc *,struct desc *);
-static void free_buildup (struct block *, struct desc *);
+static int free_buildup (struct block *, struct desc *);
 static void printMemory(void);
 /* Initializes the malloc() descriptors. */
 void
@@ -104,7 +104,7 @@ void printMemory(void){
 
   int i=1;
   for (e = list_begin (&arena_list); e != list_end (&arena_list); e = list_next (e)) {
-    printf("Page %d : \n\n",i);
+    printf("\n***Page %d : \n\n",i);
     i++;
     a=(struct arena *)e;
     int j=0;
@@ -113,8 +113,7 @@ void printMemory(void){
       printf("Size %d : \t",block_size);
       d=&descs[j];
       for (f = list_begin (&d->free_list); f != list_end (&d->free_list); f = list_next (f)) {
-        if (block_to_arena((struct block *)f) == a) {};
-        printf("%d (%d) , ",(uint8_t *)f, ((struct block *)f)->size);
+        if (block_to_arena((struct block *)f) == a) printf("%d (%d) , ",(uint8_t *)f, ((struct block *)f)->size);
       }
       j++;
       printf("\n");
@@ -234,6 +233,7 @@ malloc (size_t size)
 
         /* Allocate a page. */
         a = palloc_get_page (0);
+        list_push_back(&arena_list , &a->free_elem);
         if (a == NULL) 
           {
             return NULL; 
@@ -246,7 +246,6 @@ malloc (size_t size)
         a->magic = ARENA_MAGIC;
         a->desc = descs;
         a->free_cnt = t->blocks_per_arena;
-        list_push_back(&arena_list , &a->free_elem);
         struct block *b = arena_to_block (a, 0);
         b->size=t->block_size;
         list_push_back (&t->free_list, &b->free_elem);
@@ -332,8 +331,8 @@ realloc (void *old_block, size_t new_size)
 }
 
 /*free helper function to merge the child blocks into bigger blocks*/
-void free_buildup(struct block *b, struct desc *d){
-  if(d->block_size == (&descs[desc_cnt-1])->block_size ) return;
+int free_buildup(struct block *b, struct desc *d){
+  if(d->block_size == (&descs[desc_cnt-1])->block_size ) return 1;
 
   struct block *b1,*b2;
   struct arena *a=NULL;
@@ -500,12 +499,13 @@ free (void *p)
           lock_release (&d->lock);
 
           //Now we call the free helper function which merges or coalasces buddies together into the parent block
-          free_buildup(b,d);
+          int res;
+          res=free_buildup(b,d);
 
           d=descs+desc_cnt-1;
           lock_acquire (&d->lock);
           /* If the arena is now entirely unused, free it. */
-          if (a->free_cnt == d->blocks_per_arena) 
+          if (res==1 && a->free_cnt == d->blocks_per_arena) 
             {
               size_t i=0;
 
@@ -528,7 +528,6 @@ free (void *p)
           return;
         }
     }
-  printf("free  done\n" );
   printMemory();
 }
 

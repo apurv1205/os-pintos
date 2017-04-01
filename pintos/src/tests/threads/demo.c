@@ -37,16 +37,16 @@ void test_demo(void) {
 
 
 
-int **Y=(int **)malloc(40*sizeof(int *));
+int **Y=(int **)malloc(50*sizeof(int *));
 int i,j;
-for(i=0;i<40;++i)
+for(i=0;i<50;++i)
 {
     printf("+++%d\n",i );
    
     Y[i]=(int *)malloc(sizeof(int)*2);
 }
 
-for(i=0;i<40;i++)
+for(i=0;i<50;i++)
 {
 for(j=0;j<2;++j)
 {   
@@ -57,7 +57,7 @@ printf("i= %d,\tj= %d\n",i,j);
 printf("\n");
 }
 
-for (i=0;i<40;i++) free(Y[i]);
+for (i=0;i<50;i++) free(Y[i]);
 free(Y);
 printf("Here I am\n");
 /*
