@@ -23,6 +23,15 @@
 static bool lvl1_fin=false;
 static bool lvl1_com=false;
 static bool lvl2_fin=false;
+static int x=0;
+static int clk=0;
+
+struct temp
+{
+  struct list_elem *element;
+  struct temp *next;
+  tid_t id;
+};
 
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
@@ -146,7 +155,7 @@ thread_tick (void)
 
   thread_ticks++;
   (t->ticks)++;
-
+  clk++;
 
   if(t->level == 1)
   {
@@ -155,6 +164,7 @@ thread_tick (void)
         lvl1_fin=false;
         lvl1_com=true;
         lvl2_fin=false;
+  x=1;
         intr_yield_on_return ();
       }     
     else if(thread_ticks >= TIME_SLICE)
@@ -162,6 +172,7 @@ thread_tick (void)
         lvl1_fin=true;
         lvl1_com=false;
         lvl2_fin=false;
+  x=2;
         intr_yield_on_return ();
       }
   }
@@ -172,10 +183,12 @@ thread_tick (void)
         lvl2_fin=true;
         lvl1_fin=false;
         lvl1_com=false;
+  x=3;
         intr_yield_on_return ();
       }
   }
-
+  /*if((t->level==1 && thread_ticks>=TIME_SLICE)||(t->level==2 && thread_ticks>=2*TIME_SLICE))
+     intr_yield_on_return();*/
 
 }
   /* Enforce preemption. 
@@ -184,19 +197,18 @@ thread_tick (void)
   }
 
   else if (thread_ticks >= 2*TIME_SLICE && t->level == 2) {
-    printf("ISR\n");
+    //printf("ISR\n");
     intr_yield_on_return ();
   }
 }
 */
 
-
 /* Prints thread statistics. */
 void
 thread_print_stats (void) 
 {
-  printf ("Thread: %lld idle ticks, %lld kernel ticks, %lld user ticks\n",
-          idle_ticks, kernel_ticks, user_ticks);
+  //printf ("Thread: %lld idle ticks, %lld kernel ticks, %lld user ticks\n",
+          //idle_ticks, kernel_ticks, user_ticks);
 }
 
 /* Creates a new kernel thread named NAME with the given initial
@@ -235,7 +247,7 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
-
+  //printf("%d: thread %d is created and added to L1 queue\n",clk,t->tid);
   /* Prepare thread for first run by initializing its stack.
      Do this atomically so intermediate values for the 'stack' 
      member cannot be observed. */
@@ -301,12 +313,16 @@ thread_unblock (struct thread *t)
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
   if (t->level==1) {
+   t->status = THREAD_READY;
+  //printf("%d: thread %d moved to L1 queue from Blocked state",clk,t->tid);
     list_push_back (&ready_list_1, &t->elem);
   }
   else {
+    t->status = THREAD_READY;
+  //printf("%d: thread %d moved to L2 queue from Blocked state",clk,t->tid);
     list_push_back (&ready_list_2, &t->elem);
   }
-  t->status = THREAD_READY;
+  
   intr_set_level (old_level);
 }
 
@@ -374,67 +390,165 @@ thread_yield (void)
   
   ASSERT (!intr_context ());
 
-  old_level = intr_disable ();
+  old_level = intr_disable ();/*
   if (!list_empty(&ready_list_1)) {
     if(!list_empty(&ready_list_2)) {
       struct list_elem *start_item,*next_item,*item;
       start_item = list_begin(&ready_list_2);
       struct thread *t = list_entry (start_item, struct thread, allelem);
-      if(t->status == THREAD_READY)
-      {
+      //if(t->status == THREAD_READY)
+      
         if(++(t->level_2_wait) >= 6 * TIME_SLICE) {
             t->level=1;
             t->ticks=0;
             list_remove(start_item);
             list_push_back (&ready_list_1, start_item);
         }       
-      }
+      
 
       for (item = list_begin (&ready_list_2); list_next(item) != list_end (&ready_list_2);item=list_next(item))
       {
         next_item = list_next(item);
         struct thread *t = list_entry (next_item, struct thread, allelem);
-        if(t->status == THREAD_READY)
-        {         
+       // if(t->status == THREAD_READY)
+                
           if(++(t->level_2_wait) >= 6 * TIME_SLICE) {
-              printf("Removing %d from queue 2\n",t->tid );
+              //printf("Removing %d from queue 2\n",t->tid );
               t->level=1;
               t->ticks=0;
               list_remove(next_item);
               list_push_back (&ready_list_1, next_item);
           }    
-        }
+        
       }
     }
+  }*/
+/*
+  if(!list_empty(&ready_list_1))
+    {     
+    struct temp *lst=(struct temp*)malloc(sizeof(struct temp));
+    lst->element=NULL;
+    lst->next=NULL;
+    struct temp *h=lst;
+    if(!list_empty(&ready_list_2))
+    {
+      struct list_elem *e;
+      for (e = list_begin (&ready_list_2); e != list_end (&ready_list_2);
+           e = list_next (e))
+        {
+          struct thread *t = list_entry (e, struct thread, allelem);
+          if(t->status == THREAD_READY)
+      {
+        if(++(t->level_2_wait) >= 6 * TIME_SLICE)
+          { //printf("here123\n");
+            t->level=1;
+            t->ticks=0;
+            h->element=e;
+            h->id=t->tid;
+            h->next=(struct temp*)malloc(sizeof(struct temp));
+            h=h->next;
+          }
+      }
+        }
+    }
+    h=lst;
+    while(h->next != NULL)
+    {       //printf("reached here\n"); 
+      list_remove(h->element);
+      list_push_back (&ready_list_1, h->element);
+      h->element=NULL;
+      h=h->next;
+      //printf("\n%d: thread %d goes from L2 queue to L1 queue",clk,h->id);
+      
+    }
+    free(lst);
+   }*/
+
+  ////printf("\nThe current level of queue :%d  for thread id :  %d   %d   %d\n",cur->level,cur->level,cur->ticks,cur->level_2_wait);
+
+ if(!list_empty(&ready_list_1))
+  {
+    if(!list_empty(&ready_list_2))
+      { 
+          struct list_elem *e,*tmp=NULL;
+          for (e = list_begin (&ready_list_2); e != list_end (&ready_list_2);
+           e = list_next (e))
+                {
+                       struct thread *t=list_entry(e,struct thread,elem);
+                      // if(t->status == THREAD_READY){
+                             if(tmp!=NULL)
+          {
+            struct thread *f=list_entry(tmp,struct thread,elem);
+            list_remove(tmp);
+            list_push_back(&ready_list_1,tmp);
+            f->level_2_wait = 0;
+            //printf("%d: thread %d goes from L2 queue to L1 queue\n",clk,f->tid);
+          }
+          ++(t->level_2_wait);
+        if(t->level_2_wait >=6)
+                                    {   
+          tmp=e;
+          t->level=1;
+          t->ticks=0;
+                                     }
+        else
+          tmp=NULL;
+                              //    }
+        
+                              
+                 }
+  if(tmp!=NULL)
+          {
+            struct thread *f=list_entry(tmp,struct thread,elem);
+            list_remove(tmp);
+            list_push_back(&ready_list_1,tmp);
+            f->level_2_wait = 0;
+            //printf("%d: thread %d goes from L2 queue to L1 queue\n",clk,f->tid);
+          }
+      }
+
   }
 
-  //printf("\nThe current level of queue :%d  for thread id :  %d   %d   %d\n",cur->level,cur->level,cur->ticks,cur->level_2_wait);
 
- if(lvl1_fin)
+ if(cur!=idle_thread){
+  if(x==1)
   {
-    if (cur != idle_thread) 
-      list_push_back (&ready_list_1, &cur->elem);
-    cur->status = THREAD_READY;
-    schedule ();
-  }
-  else if(lvl1_com)
-  {
-    if(cur != idle_thread)
-      list_push_back (&ready_list_2, &cur->elem);
+   
+      
+    //printf("%d: thread %d goes from L1 queue to L2 queue \n",clk,cur->tid);
     cur->status = THREAD_READY;
     cur->level=2;
     cur->ticks=0;
     cur->level_2_wait=0;
-    schedule ();
+    list_push_back (&ready_list_2, &cur->elem);
+   schedule ();
+   /* struct thread* f= thread_current();
+    //printf("\n%d: thread %d goes from L%d to running state",clk,f->tid,f->level);*/
   }
-  else if(lvl2_fin)
+   else if(x==2)
   {
-    if (cur != idle_thread) 
-         list_push_back (&ready_list_2, &cur->elem);
-      cur->status = THREAD_READY;
-    cur->ticks=0;
-      schedule ();  
+      
+    //printf("%d: thread %d goes from running state to L1 queue\n",clk,cur->tid);
+    cur->status = THREAD_READY;
+    list_push_back (&ready_list_1, &cur->elem);
+   schedule ();
+    /*struct thread* f= thread_current();
+    //printf("\n%d: thread %d goes from L%d to running state",clk,f->tid,f->level);*/
   }
+  else if(x==3)
+  {
+
+         
+  //printf("%d: thread %d goes from running state to L2 queue\n",clk,cur->tid);
+      cur->status = THREAD_READY;
+    cur->ticks=0;  
+  list_push_back (&ready_list_2, &cur->elem);
+   schedule ();
+ /*   struct thread* f= thread_current();
+    //printf("\n%d: thread %d goes from L%d to running state",clk,f->tid,f->level);*/
+  }
+  }
+ 
   intr_set_level (old_level);
 }
 
@@ -615,6 +729,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+  
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -656,8 +771,8 @@ next_thread_to_run (void)
    the first time a thread is scheduled it is called by
    switch_entry() (see switch.S).
 
-   It's not safe to call printf() until the thread switch is
-   complete.  In practice that means that printf()s should be
+   It's not safe to call //printf() until the thread switch is
+   complete.  In practice that means that //printf()s should be
    added at the end of the function.
 
    After this function and its caller returns, the thread switch
@@ -697,7 +812,7 @@ thread_schedule_tail (struct thread *prev)
    running to some other state.  This function finds another
    thread to run and switches to it.
 
-   It's not safe to call printf() until thread_schedule_tail()
+   It's not safe to call //printf() until thread_schedule_tail()
    has completed. */
 static void
 schedule (void) 
@@ -709,10 +824,13 @@ schedule (void)
   ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (cur->status != THREAD_RUNNING);
   ASSERT (is_thread (next));
-
+   
   if (cur != next)
     prev = switch_threads (cur, next);
+  
   thread_schedule_tail (prev);
+  struct thread *t = running_thread();
+  //printf("%d: thread %d moved from L%d queue to running state\n",clk,t->tid,t->level);
 }
 
 /* Returns a tid to use for a new thread. */

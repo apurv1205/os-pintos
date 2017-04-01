@@ -49,6 +49,7 @@ struct desc
 /* Arena. */
 struct arena 
   {
+    struct list_elem free_elem;
     unsigned magic;             /* Always set to ARENA_MAGIC. */
     struct desc *desc;          /* Owning descriptor, null for big block. */
     size_t free_cnt;            /* Free blocks; pages in big block. */
@@ -58,15 +59,19 @@ struct arena
 struct block 
   {
     struct list_elem free_elem; /* Free list element. */
+    size_t size;
   };
 
 /* Our set of descriptors. */
 static struct desc descs[10];   /* Descriptors. */
 static size_t desc_cnt;         /* Number of descriptors. */
+static struct list arena_list;
 
 static struct arena *block_to_arena (struct block *);
 static struct block *arena_to_block (struct arena *, size_t idx);
-
+static void malloc_breakdown (struct desc *,struct desc *);
+static void free_buildup (struct block *, struct desc *);
+static void printMemory(void);
 /* Initializes the malloc() descriptors. */
 void
 malloc_init (void) 
@@ -82,6 +87,89 @@ malloc_init (void)
       list_init (&d->free_list);
       lock_init (&d->lock);
     }
+
+  list_init (&arena_list);
+}
+
+void printMemory(void){
+  size_t num=0;
+  struct list_elem *e,*f;
+  struct arena *a;
+  size_t block_size;
+  struct desc *d;
+
+  num=list_size(&arena_list);
+  printf("--------------------------------------------------------------------\n");
+  printf("No. of pages allocated : %d\n\n", num);
+
+  int i=1;
+  for (e = list_begin (&arena_list); e != list_end (&arena_list); e = list_next (e)) {
+    printf("Page %d : \n\n",i);
+    i++;
+    a=(struct arena *)e;
+    int j=0;
+    for (block_size = 16; block_size < PGSIZE / 2; block_size *= 2)
+    {
+      printf("Size %d : \t",block_size);
+      d=&descs[j];
+      for (f = list_begin (&d->free_list); f != list_end (&d->free_list); f = list_next (f)) {
+        if (block_to_arena((struct block *)f) == a) {};
+        printf("%d (%d) , ",(uint8_t *)f, ((struct block *)f)->size);
+      }
+      j++;
+      printf("\n");
+    }
+  }
+  printf("--------------------------------------------------------------------\n");
+  return;
+}
+
+
+//helper function for malloc
+void
+malloc_breakdown(struct desc *t, struct desc *d){
+  if ( t->block_size == d->block_size ) return;
+  
+  struct block *b,*b1,*b2;
+  struct arena *a=NULL;
+  struct desc *next;
+  struct list_elem *e;
+
+  lock_acquire (&t->lock);
+  b = list_entry (list_pop_front (&t->free_list), struct block, free_elem);
+  a = block_to_arena (b);
+  a->free_cnt--;
+  lock_release (&t->lock);
+
+  t--;
+  b1=(struct block *)b;
+  b1->size=t->block_size;
+//  printf("%d  %d\n",(uint8_t *)b1,(uint8_t *)&b1->free_elem );
+
+  b2=(struct block *) ((uint8_t *) b1 + t->block_size);
+  b2->size=t->block_size;
+//  printf("%d  %d\n",(uint8_t *)b2,(uint8_t *)&b2->free_elem );
+
+//  if ((uint8_t *)&b2->free_elem  == (uint8_t *)&b1->free_elem  + b1->size ) printf("joda jaa sakta hai!\n");
+
+  next=t;
+
+  lock_acquire (&next->lock);
+  a = block_to_arena (b1);
+  for (e = list_begin (&next->free_list); e != list_end (&next->free_list); e = list_next (e))
+    if ((uint8_t *)&b1->free_elem < (uint8_t *)e)
+      break;
+  list_insert (e, &b1->free_elem);
+  a->free_cnt++;
+  a = block_to_arena (b2);
+  for (e = list_begin (&next->free_list); e != list_end (&next->free_list); e = list_next (e))
+    if ((uint8_t *)&b2->free_elem < (uint8_t *)e)
+      break;
+  list_insert (e, &b2->free_elem);
+  a->free_cnt++;
+  lock_release (&next->lock);
+
+  malloc_breakdown(t,d);
 }
 
 /* Obtains and returns a new block of at least SIZE bytes.
@@ -89,7 +177,7 @@ malloc_init (void)
 void *
 malloc (size_t size) 
 {
-  struct desc *d;
+  struct desc *d,*t;
   struct block *b;
   struct arena *a;
 
@@ -99,9 +187,11 @@ malloc (size_t size)
 
   /* Find the smallest descriptor that satisfies a SIZE-byte
      request. */
+  size+=sizeof *b;
   for (d = descs; d < descs + desc_cnt; d++)
     if (d->block_size >= size)
       break;
+
   if (d == descs + desc_cnt) 
     {
       /* SIZE is too big for any descriptor.
@@ -124,34 +214,62 @@ malloc (size_t size)
   /* If the free list is empty, create a new arena. */
   if (list_empty (&d->free_list))
     {
-      size_t i;
-
-      /* Allocate a page. */
-      a = palloc_get_page (0);
-      if (a == NULL) 
-        {
-          lock_release (&d->lock);
-          return NULL; 
+      int result=0;
+      t=d;
+      for (t = d; t < descs + desc_cnt; t++) {
+        if (!list_empty(&t->free_list)) {
+          result=1;
+          break;
         }
+      }
 
-      /* Initialize arena and add its blocks to the free list. */
-      a->magic = ARENA_MAGIC;
-      a->desc = d;
-      a->free_cnt = d->blocks_per_arena;
-      for (i = 0; i < d->blocks_per_arena; i++) 
-        {
-          struct block *b = arena_to_block (a, i);
-          list_push_back (&d->free_list, &b->free_elem);
-        }
+      lock_release (&d->lock);
+  
+      //The next larger block to be broken is t, we break it recursively till we aquire the block of requested size
+      //modifying the descs array in the process
+
+      //if the result is 0, means there is no block free of any size greater than the requested size, so we 
+      //get a page and make it a block of the largest possible size
+      if(result==0) {
+
+        /* Allocate a page. */
+        a = palloc_get_page (0);
+        if (a == NULL) 
+          {
+            return NULL; 
+          }
+
+        /* Initialize arena and add its block to the free list. */
+        
+        t=descs+desc_cnt-1;
+        lock_acquire (&t->lock);
+        a->magic = ARENA_MAGIC;
+        a->desc = descs;
+        a->free_cnt = t->blocks_per_arena;
+        list_push_back(&arena_list , &a->free_elem);
+        struct block *b = arena_to_block (a, 0);
+        b->size=t->block_size;
+        list_push_back (&t->free_list, &b->free_elem);
+        lock_release (&t->lock);
+      }
+
+      //Now, we are gauranteed to have found the bigger block to be broken recursively to 
+      //get the block of requested size
+      malloc_breakdown(t,d);
     }
 
+    else lock_release(&d->lock);
+
+  lock_acquire (&d->lock);
   /* Get a block from free list and return it. */
   b = list_entry (list_pop_front (&d->free_list), struct block, free_elem);
   a = block_to_arena (b);
   a->free_cnt--;
   lock_release (&d->lock);
-  return b;
+  printMemory();
+  return b+1;
 }
+
 
 /* Allocates and return A times B bytes initialized to zeroes.
    Returns a null pointer if memory is not available. */
@@ -179,10 +297,10 @@ static size_t
 block_size (void *block) 
 {
   struct block *b = block;
-  struct arena *a = block_to_arena (b);
-  struct desc *d = a->desc;
-
-  return d != NULL ? d->block_size : PGSIZE * a->free_cnt - pg_ofs (block);
+  //struct arena *a = block_to_arena (b);
+  //struct desc *d = a->desc;
+  return b->size;
+  //return d != NULL ? d->block_size : PGSIZE * a->free_cnt - pg_ofs (block);
 }
 
 /* Attempts to resize OLD_BLOCK to NEW_SIZE bytes, possibly
@@ -213,6 +331,121 @@ realloc (void *old_block, size_t new_size)
     }
 }
 
+/*free helper function to merge the child blocks into bigger blocks*/
+void free_buildup(struct block *b, struct desc *d){
+  if(d->block_size == (&descs[desc_cnt-1])->block_size ) return;
+
+  struct block *b1,*b2;
+  struct arena *a=NULL;
+  struct list_elem *e,*f;
+  int index=0;
+
+  lock_acquire (&d->lock);
+
+  for (e = list_begin (&d->free_list); e != list_end (&d->free_list); e = list_next (e)) {
+    if ( (uint8_t *)e == (uint8_t *)&b->free_elem ) {
+      break;
+    }
+  }
+
+  a = block_to_arena (b);
+  index = ( (uint8_t *)b - ((uint8_t *) a + sizeof *a) )/d->block_size;
+
+  if ((uint8_t *)e != (uint8_t *)list_begin (&d->free_list) && index%2==1 ) {
+    f=list_prev(e);
+    if (f==list_head(&d->free_list)) {
+      lock_release(&d->lock);
+      return;
+    }
+    if ((uint8_t *)e  == (uint8_t *)f  + d->block_size ) {
+      b1 = list_entry(f,struct block, free_elem);
+      b2 = list_entry(e,struct block, free_elem);
+      a = block_to_arena (b1);
+      list_remove (&b1->free_elem);
+      a->free_cnt--;
+
+      a = block_to_arena (b2);
+      list_remove (&b2->free_elem);
+      a->free_cnt--;
+      lock_release (&d->lock);
+
+
+#ifndef NDEBUG
+      /* Clear the block to help detect use-after-free bugs. */
+      memset (b, 0xcc, d->block_size);
+#endif
+
+      b=b1;
+      b->size = d->block_size*2;
+      d++;
+
+      lock_acquire (&d->lock);
+
+      /* Add block to free list in ascending sorted order */
+      for (e = list_begin (&d->free_list); e != list_end (&d->free_list); e = list_next (e))
+      if ((uint8_t *)&b->free_elem < (uint8_t *)e)
+        break;
+      list_insert (e, &b->free_elem);
+      a=block_to_arena(b);
+      a->free_cnt++;
+      lock_release (&d->lock);
+      
+      //Now we call the free helper function which merges or coalasces buddies together into the parent block
+      free_buildup(b,d);
+      return;
+    }
+  }
+
+if ((uint8_t *)e != (uint8_t *)list_end (&d->free_list) && index%2==0 ) {
+    f=list_next(e);
+    if (f==list_tail(&d->free_list)) {
+      lock_release(&d->lock);
+      return;
+    }
+    if ((uint8_t *)f  == (uint8_t *)e  + d->block_size ) {
+      b1 = list_entry(e,struct block, free_elem);
+      b2 = list_entry(f,struct block, free_elem);
+      a = block_to_arena (b1);
+      list_remove (&b1->free_elem);
+      a->free_cnt--;
+
+      a = block_to_arena (b2);
+      list_remove (&b2->free_elem);
+      a->free_cnt--;
+      lock_release (&d->lock);
+
+#ifndef NDEBUG
+      /* Clear the block to help detect use-after-free bugs. */
+      memset (b, 0xcc, d->block_size);
+#endif
+
+      b=b1;
+      b->size = d->block_size*2;
+      d++;
+
+      lock_acquire (&d->lock);
+
+      /* Add block to free list in ascending sorted order */
+      for (e = list_begin (&d->free_list); e != list_end (&d->free_list); e = list_next (e))
+      if ((uint8_t *)&b->free_elem < (uint8_t *)e)
+        break;
+      list_insert (e, &b->free_elem);
+      a=block_to_arena(b);
+      a->free_cnt++;
+      lock_release (&d->lock);
+      
+      //Now we call the free helper function which merges or coalasces buddies together into the parent block
+      free_buildup(b,d);
+      return;
+    }
+  }
+
+lock_release (&d->lock);
+return;
+
+}
+
+
 /* Frees block P, which must have been previously allocated with
    malloc(), calloc(), or realloc(). */
 void
@@ -220,35 +453,69 @@ free (void *p)
 {
   if (p != NULL)
     {
-      struct block *b = p;
+      struct block *b = (struct block *)p;
+      b-=1;
       struct arena *a = block_to_arena (b);
       struct desc *d = a->desc;
-      
+      size_t size, block_size;
+      size=b->size;
+      struct list_elem *e;
+      int index=0;
+      if((int)size < 0) {
+        printf("corrupted Memory\n");
+        size=(size_t) ((uint8_t)p);
+      }
+      /*
+      printMemory();
+      if ((int)size < 0){
+        printf("gadbad\n");
+        int sz;
+        sz=(uint8_t)p;
+        printf("%d\n",sz );
+      }
+      */
+      for (block_size = 16; block_size < PGSIZE / 2; block_size *= 2) {
+        if (block_size >= size) {
+          break;
+        }
+        index++;
+      }
+      if (index==7) printf("corrupted memory\n");;
       if (d != NULL) 
         {
           /* It's a normal block.  We handle it here. */
+          d = &descs[index];
 
-#ifndef NDEBUG
-          /* Clear the block to help detect use-after-free bugs. */
-          memset (b, 0xcc, d->block_size);
-#endif
-  
+// #ifndef NDEBUG
+//        //Clear the block to help detect use-after-free bugs. 
+//        memset (b, 0xcc, d->block_size);
+// #endif
           lock_acquire (&d->lock);
+          /* Add block to free list in ascending sorted order */
+          for (e = list_begin (&d->free_list); e != list_end (&d->free_list); e = list_next (e))
+          if ((uint8_t *)&b->free_elem < (uint8_t *)e)
+            break;
+          list_insert (e, &b->free_elem);
+          a->free_cnt++;
+          lock_release (&d->lock);
 
-          /* Add block to free list. */
-          list_push_front (&d->free_list, &b->free_elem);
+          //Now we call the free helper function which merges or coalasces buddies together into the parent block
+          free_buildup(b,d);
 
+          d=descs+desc_cnt-1;
+          lock_acquire (&d->lock);
           /* If the arena is now entirely unused, free it. */
-          if (++a->free_cnt >= d->blocks_per_arena) 
+          if (a->free_cnt == d->blocks_per_arena) 
             {
-              size_t i;
+              size_t i=0;
 
               ASSERT (a->free_cnt == d->blocks_per_arena);
-              for (i = 0; i < d->blocks_per_arena; i++) 
-                {
+            //  for (i = 0; i < d->blocks_per_arena; i++) 
+            //   {
                   struct block *b = arena_to_block (a, i);
                   list_remove (&b->free_elem);
-                }
+            //    }
+              list_remove(&a->free_elem);  
               palloc_free_page (a);
             }
 
@@ -261,6 +528,8 @@ free (void *p)
           return;
         }
     }
+  printf("free  done\n" );
+  printMemory();
 }
 
 /* Returns the arena that block B is inside. */
